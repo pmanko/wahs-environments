@@ -24,7 +24,7 @@ services:
       - traefik.http.routers.fhir-${COMPOSE_PROJECT_NAME}.entrypoints=websecure
       - traefik.http.routers.fhir-${COMPOSE_PROJECT_NAME}.tls.certresolver=letsencrypt
 
-       # add CORS middleware, configured to return `Access-Control-Allow-Origin: *`
+      # add CORS middleware, configured to return `Access-Control-Allow-Origin: *`
       # NB accessControlAllowOrigin is deprecated, but not noted in docs
       # https://github.com/traefik/traefik/issues/8796
       - traefik.http.middlewares.fhir-${COMPOSE_PROJECT_NAME}-cors.headers.accessControlAllowOriginList=*
@@ -32,6 +32,7 @@ services:
       - traefik.http.middlewares.fhir-${COMPOSE_PROJECT_NAME}-cors.headers.accessControlAllowMethods=HEAD,GET,OPTIONS,PATCH,POST,PUT,DELETE
       - traefik.http.middlewares.fhir-${COMPOSE_PROJECT_NAME}-cors.headers.accessControlAllowHeaders=Authorization,Origin,Content-Type,Accept
       - traefik.http.routers.fhir-${COMPOSE_PROJECT_NAME}.middlewares=fhir-${COMPOSE_PROJECT_NAME}-cors
+
   keycloak:
     extends:
       file: ../base/docker-compose.yaml
@@ -39,33 +40,97 @@ services:
     environment:
       KEYCLOAK_ADMIN_PASSWORD: admin
     env_file:
-      keycloak.env
+      - path: keycloak.env.default
+        required: true
+      - path: keycloak.env
+        required: false
 
   fhir-smoketest:
     extends:
       file: ../base/docker-compose.yaml
       service: fhir-smoketest
 
+  wahs-seeder:
+    build:
+      context: ${WAHS_ENGINE_CONTEXT:-../../wahs-engine}
+    image: wahs-engine:dev
+    depends_on:
+      fhir:
+        condition: service_healthy
+    command:
+      - wahs-seed-hapi
+      - --fhir-url
+      - http://fhir-internal:8080/fhir
+      - --persona
+      - ${WAHS_SEED_PERSONA:-all}
+      - --keycloak-sub
+      - ${WAHS_SEED_KEYCLOAK_SUB:-demo-alex-sub}
+    restart: "no"
+    networks:
+      - internal
+
   fhir-auth:
     extends:
       file: ../base/docker-compose.yaml
       service: fhir-auth
     env_file:
-      fhir-auth.env
+      - path: fhir-auth.env.default
+        required: true
+      - path: fhir-auth.env
+        required: false
 
   shl-creator:
     extends:
       file: ../base/docker-compose.yaml
       service: shl-creator
+    environment:
+      WAHS_ENGINE_URL: http://wahs-engine:8080/v1
+      SERVER_API_BASE: http://shl-server:3000/api
     env_file:
-      shl-creator.env
+      - path: shl-creator.env.default
+        required: true
+      - path: shl-creator.env
+        required: false
+    networks:
+      - ingress
+      - internal
+
+  wahs-engine:
+    build:
+      context: ${WAHS_ENGINE_CONTEXT:-../../wahs-engine}
+    image: wahs-engine:dev
+    environment:
+      WAHS_FHIR_AUTH_BASE_URL: http://fhir-auth:8080/fhir
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://chat.co.dev.cirg.uw.edu/v1}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      WAHS_DEFAULT_MODEL: ${WAHS_DEFAULT_MODEL:-gemma-4-e4b}
+      WAHS_ALLOW_LOCAL_BUNDLE_MODE: "false"
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.wahs-engine-${COMPOSE_PROJECT_NAME}.rule=Host(`wahs-engine.${BASE_DOMAIN}`)
+      - traefik.http.routers.wahs-engine-${COMPOSE_PROJECT_NAME}.entrypoints=websecure
+      - traefik.http.routers.wahs-engine-${COMPOSE_PROJECT_NAME}.tls=true
+      - traefik.http.routers.wahs-engine-${COMPOSE_PROJECT_NAME}.tls.certresolver=letsencrypt
+      - traefik.http.services.wahs-engine-${COMPOSE_PROJECT_NAME}.loadbalancer.server.port=8080
+    depends_on:
+      - fhir-auth
+    restart: unless-stopped
+    networks:
+      - ingress
+      - internal
 
   shl-server:
     extends:
       file: ../base/docker-compose.yaml
       service: shl-server
     env_file:
-      shl-server.env
+      - path: shl-server.env.default
+        required: true
+      - path: shl-server.env
+        required: false
+    networks:
+      - ingress
+      - internal
 
 volumes:
   db-data: {}
